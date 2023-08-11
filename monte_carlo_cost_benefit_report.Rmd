@@ -1,0 +1,487 @@
+---
+title:  "Monte Carlo Methodology for Cost Benefit Analysis"
+author: "Zachary Payne-Thompson"
+date:   "`r format(Sys.time(), '%B %d, %Y')`"
+output: 
+  html_document: 
+    toc: yes
+    toc_float: TRUE
+    number_sections: yes
+    highlight: tango
+    css: C:/Users/paynethompsonz/OneDrive - Department for Business Energy and Industrial Strategy/Documents/CHI Analysis 2021-22/IDHRS/Models/aggregation_tool/other/beis_css.css
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+```
+
+## Outline
+
+This script shows how to apply Monte Carlo simulations to cost data based on low, central and high estimates.
+
+## Data
+
+Firstly, simulate project cost data.
+
+```{r data, echo=FALSE}
+
+#> Packages ----
+
+library(beisics)
+library(readxl)
+library(tidyverse)
+
+#> Data ----
+
+#> Set Seed ----
+
+# Set seed for reproducibility
+set.seed(123)
+
+# Create a data frame with 100 rows and 3 columns
+data <- data.frame(
+  project_id = 1:100,
+  low = runif(100, min = 50, max = 100),
+  central = runif(100, min = 100, max = 200),
+  high = runif(100, min = 200, max = 300)
+)
+
+# Add some extreme values for certain projects
+extreme_low <- sample(1:100, 5)
+data$low[extreme_low] <- rnorm(5, mean = 300, sd = 50)
+
+extreme_central <- sample(1:100, 3)
+data$central[extreme_central] <- rnorm(3, mean = 400, sd = 75)
+
+extreme_high <- sample(1:100, 8)
+data$high[extreme_high] <- rnorm(8, mean = 500, sd = 100)
+
+# Ensure that the 'low' values are always lower than the 'central' values, and the 'central' values are always lower than the 'high' values
+data <- data %>% 
+  mutate(low = ifelse(low >= central, central - runif(1, (central - 1)/2, central - 1), low),
+         high = ifelse(high <= central, central + runif(1, (high - 1)/2, high - 1), high))
+
+
+# Check the structure of the data
+head(data)
+```
+
+## Distribution Functions
+
+Creating functions that create different distributions based on specified parameters.
+
+Each function creates a sequence of possible costs at the project level based on the user specified "high" and "low" arguments. Depending on the assumption of distribution, a probability distribution function is then used to create a vector of probabilities. This is used in the sample() function to sample from the sequence of possible cost values, with replacement, using the probability distribution assumed.
+
+Some distribution assumptions require parameters, which use added arguments.
+
+To find total cost distributions, the function is then applied over the project data set and the totals found. This creates a vector of possible costs that can then be plotted as a distribution.
+
+### Uniform Distribution
+
+Project costs are modelled using a uniform distribution spanning low to high.
+
+```{r}
+uniform_1 <- function(low, high){
+  
+  # Set of possible costs
+  sequence <- seq(from = 0, to = sum(data$high), by = 1)
+  
+  # Uniform Probability distribution function
+  distribution <- dunif(sequence, min = low, max = high)
+  
+  # Sampling from possible costs using the assumed distribution function
+  sample(x = sequence, size = 10000, replace = T, prob = distribution)
+  
+}
+```
+
+Choosing the first project and looking at the distribution. The blue lines representing low and high cost estimates, and the red line representing the central cost estimate.
+
+```{r, echo=FALSE}
+uniform_1(low = data$low[1], high = data$high[1]) %>%
+  as.data.frame() %>% 
+  ggplot() + 
+  geom_density(aes(x = .), lwd = 1.5) +
+  theme_beis() +
+  labs(title = "Project Cost Distribution",
+       subtitle = "Uniform",
+       y  = "Likelihood",
+       x  = "Total Cost") +
+  geom_vline(aes(xintercept = sum(data$central[1])), color = "red") +
+  geom_vline(aes(xintercept = sum(data$low[1])), color = "blue") +
+  geom_vline(aes(xintercept = sum(data$high[1])), color = "blue") 
+```
+
+Applying the function to the data and finding the sum of each row gives the total cost across 10000 different simulations. This provides a cost distribution across all projects. The first blue line represents the sum of the low estimates (meaning the lowest possible cost), the second blue line represents the sum of the high estimates (meaning the highest possible cost) and the red line represents the sum of the central estimates (what many analysts believe to be the "best guess" for total cost).
+
+```{r, echo=FALSE}
+mapply(uniform_1, data$low, data$high) %>% 
+  rowSums() %>%
+  as.data.frame() %>% 
+  ggplot() + 
+  geom_density(aes(x = .), lwd = 1.5) +
+  theme_beis() +
+  labs(title = "Cost Distribution",
+       subtitle = "Uniform",
+       y  = "Likelihood",
+       x  = "Total Cost") +
+  geom_vline(aes(xintercept = sum(data$central)), color = "red") +
+  geom_vline(aes(xintercept = sum(data$low)), color = "blue") +
+  geom_vline(aes(xintercept = sum(data$high)), color = "blue") 
+```
+
+This provides a normally distributed cost estimate at due to the central limit theorem.
+
+As the only parameters used to model the distribution of project costs were the high and low estimates, the total cost does not is not skewed by the central estimate. 
+
+### Normal Distribution (without central estimate)
+
+Project costs are modelled using a normal distribution with a mean defined as the midpoint between high and low, and a standard deviation that is 1/4 of the distance between high and low.
+
+This means that, if the data is normally distributed, then the low and high estimates represent the 95% confidence interval for an individual project's cost.
+
+```{r}
+normal_2 <- function(low, high){
+  
+  # Set of possible costs
+  sequence <- seq(from = 0, to = sum(data$high), by = 1)
+  
+  # Mean equal to the midpoint between low and high
+  mean_x = (high-low)/2+low
+  
+  # Standard Deviation equal to 1/4 of the distance between low and high
+  sd_x = (high-low)/4
+  
+  # Normal Probability Distribution Function
+  distribution <- dnorm(sequence, mean = mean_x, sd = sd_x)
+  
+  # Sampling from possible costs using the assumed distribution function
+  sample(x = sequence, size = 10000, replace = T, prob = distribution)
+  
+}
+```
+
+Choosing the first project and looking at the distribution
+
+```{r, echo=FALSE}
+normal_2(low = data$low[1], high = data$high[1]) %>%
+  as.data.frame() %>% 
+  ggplot() + 
+  geom_density(aes(x = .), lwd = 1.5) +
+  theme_beis() +
+  labs(title = "Project Cost Distribution",
+       subtitle = "Normal (without central estimate)",
+       y  = "Likelihood",
+       x  = "Total Cost") +
+  geom_vline(aes(xintercept = sum(data$central[1])), color = "red") +
+  geom_vline(aes(xintercept = sum(data$low[1])), color = "blue") +
+  geom_vline(aes(xintercept = sum(data$high[1])), color = "blue") 
+
+
+```
+
+And across all projects...
+
+```{r, echo=FALSE}
+mapply(normal_2, data$low, data$high) %>% 
+  rowSums() %>%
+  as.data.frame() %>% 
+  ggplot() + 
+  geom_density(aes(x = .), lwd = 1.5) +
+  theme_beis() +
+  labs(title = "Total Cost Distribution",
+       subtitle = "Normal (without central)",
+       y  = "Likelihood",
+       x  = "Total Cost (£)") +
+  geom_vline(aes(xintercept = sum(data$central)), color = "red") +
+  geom_vline(aes(xintercept = sum(data$low)), color = "blue") +
+  geom_vline(aes(xintercept = sum(data$high)), color = "blue") 
+```
+
+This provides a normally distributed total cost estimate which is tighter than if sampled from a set of uniformly distributed project level costs.
+
+Again, this does not involved the central cost estimate therefore gives a normal distribution which is centred around the mid point between low and high.
+
+### Normal Distribution (with central estimate)
+
+As above, except the mean of the normal distribution is assumed to be the central value.
+
+```{r}
+normal_3 <- function(low, central, high){
+  
+  # Set of possible costs
+  sequence <- seq(from = 0, to = sum(data$high), by = 1)
+  
+  # Mean equal to the central project cost estimate
+  mean_x = central
+  
+  # Standard Deviation equal to 1/4 of the distance between low and high
+  sd_x = (high-low)/4
+  
+  # Normal Probability Distribution Function
+  distribution <- dnorm(sequence, mean = mean_x, sd = sd_x)
+  
+  # Sampling from possible costs using the assumed distribution function
+  sample(x = sequence, size = 10000, replace = T, prob = distribution)
+  
+}
+```
+
+Choosing the first project and looking at the distribution
+
+```{r, echo=FALSE}
+normal_3(low = data$low[1], 
+         central = data$central[1], 
+         high = data$high[1]) %>%
+  as.data.frame() %>% 
+  ggplot() + 
+  geom_density(aes(x = .), lwd = 1.5) +
+  theme_beis() +
+  labs(title = "Project Cost Distribution",
+       subtitle = "Normal (with central estimate)",
+       y  = "Likelihood",
+       x  = "Total Cost") +
+  geom_vline(aes(xintercept = sum(data$central[1])), color = "red") +
+  geom_vline(aes(xintercept = sum(data$low[1])), color = "blue") +
+  geom_vline(aes(xintercept = sum(data$high[1])), color = "blue")
+```
+
+And across all projects.
+
+```{r, echo=FALSE}
+mapply(normal_3, data$low, data$central, data$high) %>% 
+  rowSums() %>%
+  as.data.frame() %>% 
+  ggplot() + 
+  geom_density(aes(x = .), lwd = 1.5) +
+  theme_beis() +
+  labs(title = "Total Cost Distribution",
+       subtitle = "Normal (with central estimate)",
+       y  = "Likelihood",
+       x  = "Total Cost") +
+  geom_vline(aes(xintercept = sum(data$central)), color = "red") +
+  geom_vline(aes(xintercept = sum(data$low)), color = "blue") +
+  geom_vline(aes(xintercept = sum(data$high)), color = "blue") 
+```
+
+This provides a normally distributed Total cost estimate which is with a mode approximately equal to the total central cost estimate. 
+
+### Log-normal Distribution
+
+Log-Normal Distribution and Cost Estimates
+The Log-Normal distribution allows for a right skew, whilst also being able to use the same input parameters as a normal distribution. Using the formula for the Cumulative Density Function of the Log-Normal distribution, we can calculate the mu and sigma parameters necessary to achieve a distribution where approximately 95% of estimates fall between the low and high cost estimates.
+To do this we can specify the relation between our central project cost estimate and any statistic we can fully specify with the relevant formula. This does, however, require an assumption about what the central estimate represents.
+
+One possible statistic that relates our 3 project cost estimates to the parameters of the distribution is the mode. If we assume that our central cost estimate represents the most likely outcome, it would be the peak of the probability distribution and therefore the mode.
+
+The mode of the Log-Normal distribution function is given by:
+
+$$
+\text{mode} = e^{\mu - \sigma^2} = \text{central}
+$$
+Making mu the subject of the expression gives:
+
+$$
+\mu = \log(\text{mode}) + \sigma^2 = \ln(\text{central}) + \sigma^2
+$$
+Therefore we need to find the sigma which gets closest to 95% of our project cost estimates falling in-between the high cost and low cost estimates. This can be calculated by the difference between the Log-Normal Cumulative Distribution Function as evaluated at the High cost estimate and evaluated at the Low cost estimate.
+
+To understand why this is true, we need to understand how a log-normal distribution is defined and how its parameters are related to its CDF.
+
+A log-normal distribution is defined by its PDF (probability density function):
+
+$$f(x; \mu, \sigma) = \frac{1}{x\sigma\sqrt{2\pi}} \exp\left(-\frac{(\ln(x) - \mu)^2}{2\sigma^2}\right)$$
+
+where $\mu$ and $\sigma$ are the parameters of the distribution. The CDF of the log-normal distribution is the integral of the PDF:
+
+$$F(x; \mu, \sigma) = \int_{-\infty}^x f(x; \mu, \sigma) dx$$
+
+Now, we can use the CDF to find the probability that a random variable from the log-normal distribution falls within a certain range. Specifically, if we want to find the probability that a random variable falls between the low and high cost estimates, we can calculate:
+
+$$P(\text{low} \le X \le \text{high}) = F(\text{high}; \mu, \sigma) - F(\text{low}; \mu, \sigma)$$
+
+where $X$ is a random variable from the log-normal distribution.
+
+We want to find the values of mu and sigma such that $P(\text{low} \le X \le \text{high}) \approx 0.95$.
+
+To do this, we define the function f(sigma) which takes sigma as an argument and returns the absolute difference between the value of $P(\text{low} \le X \le \text{high})$ and 0.95. The value of mu is calculated using the relationship:
+
+$$\mu = \ln(\text{central}) + \sigma^2$$
+
+where central is the central estimate of the project cost.
+
+We can then find the values of mu and sigma that minimize the absolute difference returned by f(sigma). These values will be the parameters of the log-normal distribution that result in approximately 95% of the estimates falling between the low and high cost estimates.
+
+To illustrate this point we can use the data from the first project.
+
+#### Testing the Log-Normal 
+
+This code is used to estimate the parameters of a log-normal distribution given the low, central, and high cost estimates of a project. The goal is to find the values of mu and sigma that will result in a log-normal distribution where approximately 95% of the estimates fall between the low and high cost estimates.
+
+The first step is to define a function f that takes sigma as an argument and returns the absolute difference between the cumulative distribution function (CDF) of the log-normal distribution evaluated at the high cost estimate and the CDF evaluated at the low cost estimate, minus 0.95. 
+
+```{r}
+f <- function(sigma){
+  
+  # The relationship between mode (central), mu and sigma
+  mu <- log(data$central[1]) + sigma^2
+  
+  # The difference between the CDF at high and CDF at low where 95% 
+  # of estimates fall
+  abs(plnorm(data$high[1], mu, sigma) - plnorm(data$low[1], mu, sigma) - 0.95)
+  
+}
+```
+
+The value of sigma that minimizes this function is the optimal sigma. This is done using the optimize function, which searches for the minimum of the function f within the given interval (in this case, 0 to 1).
+
+```{r}
+# Search the interval from lower to upper for a 
+# minimum of the function f with respect to the first argument, sigma.
+optimize(f, lower = 0, upper = 1)
+```
+
+Once the optimal value of sigma is found, the value of mu can be calculated using the formula mu = log(central) + sigma^2. 
+
+```{r}
+# Selecting the minimum from the tibble, this is the optimal sigma
+sigma_test <- optimize(f, lower = 0, upper = 1)$minimum
+
+# Plugging this back into the formula for the mean 
+mu_test <- (log(data$central[1]) + sigma_test^2) 
+```
+
+These values are then used to simulate a log-normal distribution with N (in this case, 10,000,000) samples using the rlnorm function.
+
+```{r}
+N <- 10000000
+nums <- rlnorm(N, mu_test, sigma_test)
+```
+
+Finally, the proportion of samples that fall between the low and high cost estimates is calculated, which should be close to 0.95 if the estimation was accurate.
+
+```{r}
+sum(data$low[1] < nums & nums < data$high[1]) / N
+```
+
+#### Implementing the log-normal
+
+```{r}
+log_normal_4 <- function(low, central, high){
+  
+  # Set of possible costs
+  sequence <- seq(from = 0, to = sum(data$high), by = 1)
+  
+  # Function that defines parameter relationships
+  f <- function(sigma) {
+    
+    # The relationship between central (the mode) and 
+    mu <- log(central) + sigma^2
+    
+    # The difference between the CDF at high and CDF at low
+    abs(plnorm(high, mu, sigma) - plnorm(low, mu, sigma) - 0.95)
+    
+  }
+  
+  # The optimize function searches the interval from lower to upper
+  # for a minimum of the function f with respect to its first argument.
+  sigma_x <- optimize(f, lower = 0, upper = 1)$minimum
+  
+  # Then plugging the minimum sigma back into the definition of the mean
+  mu_x <- (log(central) + sigma_x^2) 
+  
+  # Using the Log-Normal Distribution Function
+  distribution <- dlnorm(sequence, meanlog = mu_x, sdlog = sigma_x)
+  
+  # Sampling from possible costs using the assumed distribution function
+  sample(x = sequence, size = 10000, replace = T, prob = distribution)
+  
+}
+```
+
+Choosing the first project and looking at the distribution.
+
+```{r, echo=FALSE}
+log_normal_4(low = data$low[1], 
+             central = data$central[1], 
+             high = data$high[1]) %>%
+  as.data.frame() %>% 
+  ggplot() + 
+  geom_density(aes(x = .), lwd=1.5) +
+  theme_beis() +
+  labs(title = "Project Cost Distribution",
+       subtitle = "Log-Normal",
+       y  = "Likelihood",
+       x  = "Total Cost") +
+  geom_vline(aes(xintercept = sum(data$central[1])), color = "red") +
+  geom_vline(aes(xintercept = sum(data$low[1])), color = "blue") +
+  geom_vline(aes(xintercept = sum(data$high[1])), color = "blue") 
+```
+
+And total cost distribution.
+
+```{r, echo=FALSE}
+mapply(log_normal_4, data$low, data$central, data$high) %>% 
+  rowSums() %>%
+  as.data.frame() %>% 
+  ggplot() + 
+  geom_density(aes(x = .), lwd=1.5) +
+  theme_beis() +
+  labs(title = "Total Cost Distribution",
+       subtitle = "Log-Normal",
+       y  = "Likelihood",
+       x  = "Total Cost") +
+  geom_vline(aes(xintercept = sum(data$central)), color = "red") +
+  geom_vline(aes(xintercept = sum(data$low)), color = "blue") +
+  geom_vline(aes(xintercept = sum(data$high)), color = "blue") 
+```
+
+### Credible Intervals
+
+After calculating a total cost distribution based on the 4 different cost assumptions, the highest density interval (HDI) can then be calculated.
+
+Unlike equal-tailed intervals that typically exclude 2.5% from each tail of the distribution and always include the median, the HDI is not equal-tailed and therefore always includes the mode of the distribution.
+
+All points within this interval have a higher probability density than points outside of the interval. The HDI can be used in the context of uncertainty characterisation of a posterior distribution. 
+ 
+The current analytical consensus is that the 95% or 89% credible intervals (CI) are two reasonable ranges to characterise the uncertainty associated with the estimation.
+
+
+```{r}
+# Bayes Tests
+library(bayestestR)
+```
+
+Uniform:
+
+```{r, echo=FALSE}
+mapply(uniform_1, data$low, data$high) %>%
+  rowSums() %>%
+  hdi(ci = c(0.95, 0.89))
+```
+
+Normal (without central estimate):
+
+```{r, echo=FALSE}
+mapply(normal_2, data$low, data$high) %>%
+  rowSums() %>%
+  hdi(ci = c(0.95, 0.89))
+```
+
+Normal (with central estimate):
+
+```{r, echo=FALSE}
+mapply(normal_3, data$low, data$central, data$high) %>%
+  rowSums() %>%
+  hdi(ci = c(0.95, 0.89))
+```
+
+Log-Normal:
+
+```{r, echo=FALSE}
+mapply(log_normal_4, data$low, data$central, data$high) %>%
+  rowSums() %>%
+  hdi(ci = c(0.95, 0.89))
+```
+
